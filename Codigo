@@ -1,0 +1,416 @@
+/*
+
+NRU: (Not Recently Used – não usada recentemente).
+ Usa dois bits de status: bit R (referenciado) e bit M (modificado).
+ Quando o processo inicia, suas páginas ainda não estão presentes na
+memória. Assim que uma delas é referenciada, o bit R é colocado em 1.
+ Em seguida, se esta página é modificada, o bit M é colocado em 1.
+ Ao ocorrer uma page fault o sistema operacional separa todas as páginas
+em quatro categorias:
+Classe 0: não referenciada, não modificada.
+Classe 1: não referenciada, modificada.
+Classe 2: referenciada, não modificada.
+Classe 3: referenciada, modificada
+
+*/
+#include <stdio.h>
+#include <stdlib.h>
+
+int parse_arguments(int argc, char *argv[])
+{
+    int table_size;
+    if (argc == 2 && (table_size = atoi(argv[1])))
+    {
+          return table_size;
+    }
+
+    fprintf(stderr, "ARG. errados, Passe o tammanho-da-tabela como argumento\n");
+    exit(-1);
+}
+
+struct Page
+{
+    int value;
+    int dirty;
+    int reference;
+    struct Page *next;
+};
+
+
+struct Page *head = NULL;
+struct Page *current = NULL; // atual - última página da lista
+
+// lista de pesquisa para uma página específica
+
+struct Page* search_list(int value, struct Page **previous)
+{
+    struct Page *ptr = head;
+    struct Page *temp = NULL;
+    while (ptr != NULL)
+    {
+        if (ptr->value == value)
+        {
+	     if(previous)
+            	*previous = temp;
+
+	     return ptr;
+        }
+        else
+        {
+            temp = ptr;
+            ptr = ptr->next;
+        }
+    }
+
+    return NULL;
+}
+
+
+//cria uma lista encadeada
+struct Page* create_list(int value)
+{
+    struct Page *ptr = (struct Page*) malloc(sizeof(struct Page));
+    if (ptr == NULL)
+    {
+        fprintf(stderr, "Could not create the page!");
+        return NULL;
+    }
+    ptr->reference = 1;
+    ptr->dirty = 0;
+    ptr->value = value;
+    ptr->next = NULL;
+    head = current = ptr;
+    return ptr;
+}
+
+//inserir página no cabeçalho
+struct Page* insert_front(int value)
+{
+    if(head == NULL)
+    {
+        return (create_list(value));
+    }
+
+    struct Page *ptr = (struct Page*)malloc(sizeof(struct Page));
+    if (ptr == NULL)
+    {
+        fprintf(stderr, "Could not create the Page!");
+        return NULL;
+    }
+
+    ptr->reference = 1;
+    ptr->dirty = 0;
+    ptr->value = value;
+    ptr->next = head;
+    head = ptr;
+    
+    return ptr;
+}
+
+
+// busca na lista uma página específica e a exclui
+int remove_list(int value)
+{
+    struct Page *delet = NULL;
+    struct Page *previous = NULL;
+
+    delet = search_list(value, &previous);
+
+    delet->reference = 0;
+    delet->dirty = 0;
+    if(delet == NULL)
+        return -1;
+
+    else
+    {
+        if(previous != NULL)
+            previous->next = delet->next;
+        if(delet == current)
+            current = previous;
+        if (delet == head)
+            head = delet->next;
+    }
+
+    free(delet);
+    delet = NULL;
+    return 0;
+}
+
+void check_class(int page_request)
+{
+    struct Page *ptr = head;
+    struct Page *previous = NULL;
+    
+    while(ptr != NULL)
+    {
+	if(ptr->reference == 0 && ptr->dirty == 0)
+	{
+		remove_list(ptr->value);
+		return;	
+	}	
+	ptr = ptr->next;
+    }
+    ptr = head;
+    while(ptr != NULL)
+    {
+	if(ptr->reference == 0 && ptr->dirty == 1)
+	{
+		remove_list(ptr->value);
+		return;	
+	}	
+	
+	ptr = ptr->next;
+    }
+    ptr = head;
+    while(ptr != NULL)
+    {
+	if(ptr->reference == 1 && ptr->dirty == 0)
+	{
+		remove_list(ptr->value);
+		return;	
+	}	
+	ptr = ptr->next;
+    }
+    ptr = head;
+    while(ptr != NULL)
+    {
+	if(ptr->reference == 1 && ptr->dirty == 1)
+	{
+		remove_list(ptr->value);
+		return;	
+	}	
+	ptr = ptr->next;
+    }
+}
+
+void reset_refs()
+{
+    struct Page *ptr = head;
+    while(ptr != NULL)
+    {
+	ptr-> reference = 0;
+	ptr = ptr->next;
+    }
+}
+
+/* pre: um tamanho de tabela e uma solicitação de página
+ post: TRUE ou FALSE -> TRUE se houver falha de página
+, FALSE se não houver falha de página*/
+
+int nru(int table_size, int page_request, int timer)
+{
+    struct Page *ptr = NULL;
+    struct Page *previous = NULL;
+    ptr = search_list(page_request, &previous);
+    int count = 0;
+
+    if(timer == 0)
+    {
+	reset_refs();
+    }
+
+    // falha de pagina 
+    if(ptr == NULL)
+    {
+	ptr = head;
+	while(ptr != NULL)
+	{
+		ptr = ptr->next;
+		count++;
+	}
+
+	if(count >= table_size)
+	{
+		while(count >= table_size)
+		{
+			check_class(page_request);
+			--count;
+		}
+	}
+	else
+	{
+		insert_front(page_request);	// bit de referencia =1 
+	}
+
+	return 1;
+    }
+    // a pagina esta na lista 
+    else
+    {
+	ptr = search_list(page_request, &previous);
+	ptr->dirty = 1; // muda para o bit  = 1
+    }
+
+	return 0;
+}
+
+int main(int argc, char*argv[])
+{
+    int table_size = parse_arguments(argc, argv);
+    int page_request;
+    int num_requests = 0;
+    int num_misses = 0;
+
+    int *page_table = (int *) malloc(sizeof(int)*table_size);
+    char *input = NULL;
+    size_t input_allocated = 0;
+    ssize_t bytes_read;
+
+   // A cada página "reset_size", redefiniremos o bit de referência para 0
+   
+    int reset_size = 12345;
+    int reset_timer = reset_size;
+
+    while ((bytes_read = getline(&input, &input_allocated, stdin)) != -1)
+    {
+        page_request = atoi(input);
+        num_requests++;
+        if (page_request == 0)
+              continue;
+
+/* Aqui é onde fazemos uso do P.R.A.
+ O P.R.A. retornará 1 se houver uma falha de página,
+ ajudando-nos a contar as faltas*/
+	
+        if(nru(table_size,page_request,reset_timer--)) 
+        {
+              printf("Page %d caused a page fault\n", page_request);
+              num_misses++;
+        }
+    	if(reset_timer <= 0)
+		reset_timer = reset_size;
+    }
+
+    /* número de acertos = num_requests-num_misses
+     taxa de acertos = acertos/solicitações*/
+     
+    printf("Hit rate: %f\n", (num_requests-num_misses)/(double)num_requests);
+
+
+    free(input);
+    free(page_table);
+    return 0;	
+
+
+
+
+
+	return 0;
+}
+/*
+
+FIFO: Este é o algoritmo de substituição de página mais simples. Neste algoritmo
+ o sistema operacional mantém o controle de todas as páginas na memória em uma fila,
+ a página mais antiga está na frente da fila. Quando uma página precisa ser substituída,
+ a página na frente da fila é selecionada para remoção. 
+
+Exemplo 1. Considere a sequência de referência de página 1, 3, 0, 3, 5, 6 e 3 slots de página. 
+Inicialmente todos os slots estão vazios, 
+então quando 1, 3,0 chegam eles são alocados para os slots vazios —> 3 Page Faults. 
+quando 3 vem, ele já está na memória então —> 0 Page Faults.
+ Então vem 5, ele não está disponível na memória,
+então ele substitui o slot de página mais antigo, ou seja, 1. —>1 Page Fault. 
+
+Finalmente 6 vem, ele também não está disponível na memória,
+então ele substitui o slot de página mais antigo, ou seja, 3 —>1 Page Fault. 
+
+Portanto, o total de falhas de página = 5 . 
+
+Exemplo -2. Considere a seguinte string de referência: 0, 2, 1, 6, 4, 0, 1, 0, 3, 1, 2, 1. 
+Usando algoritmo de substituição de página FIFO – 
+Portanto, número total de falhas de página = 9. 
+Dada a capacidade de memória (como o número de páginas que ela pode conter) 
+e uma string representando as páginas a serem referenciadas,
+escreva uma função para encontrar o número de falhas de página. 
+
+
+*/
+
+/*Implementação usando o C++ do FIFO*/
+#include<bits/stdc++.h>
+using namespace std;
+ 
+// Função para encontrar falhas de página usando FIFO
+int pageFaults(int pages[], int n, int capacity)
+{
+    /* Para representar o conjunto de páginas atuais. Nós usamos
+     um unordered_set para que possamos verificar rapidamente
+     se uma página está presente no conjunto ou não*/
+    unordered_set<int> s;
+ 
+   // Para armazenar as páginas no modo FIFO
+    queue<int> indexes;
+ 
+   // Começa na página inicial
+    int page_faults = 0;
+    for (int i=0; i<n; i++)
+    {
+      // Verifica se o conjunto pode conter mais páginas
+        if (s.size() < capacity)
+        {
+           /*Insere-o no set se não estiver presente
+             já que representa falha de página*/
+             
+            if (s.find(pages[i])==s.end())
+            {
+                //Insere a página atual no conjunto
+                s.insert(pages[i]);
+ 
+               // incrementa a falha de página
+                page_faults++;
+ 
+               // Empurra a página atual para a fila
+                indexes.push(pages[i]);
+            }
+        }
+ 
+      /* Se o conjunto estiver cheio, então precisa executar FIFO
+         ou seja, remova a primeira página da fila de
+         define e enfileira ambos e insere a página atual*/
+        
+        else
+        {
+            // Verifica se a página atual já não está presente no conjunto
+            
+            if (s.find(pages[i]) == s.end())
+            {
+                /* Armazena a primeira página no
+                 fila a ser usada para encontrar e
+                 apaga a página do conjunto*/
+                
+                int val = indexes.front();
+                 
+               // Retira a primeira página da fila
+                indexes.pop();
+ 
+                //Remove a página de índices do conjunto
+                s.erase(val);
+ 
+                // insere a página atual no conjunto
+                s.insert(pages[i]);
+ 
+               // empurra a página atual para a fila
+               
+                indexes.push(pages[i]);
+ 
+              // Incrementa falhas de página
+              
+                page_faults++;
+            }
+        }
+    }
+ 
+    return page_faults;
+}
+ 
+// Código do driver
+
+int main()
+{
+    int pages[] = {7, 0, 1, 2, 0, 3, 0, 4,
+                   2, 3, 0, 3, 2};
+    int n = sizeof(pages)/sizeof(pages[0]);
+    int capacity = 4;
+    cout << pageFaults(pages, n, capacity);
+    return 0;
+}
